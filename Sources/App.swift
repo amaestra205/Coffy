@@ -3,24 +3,28 @@ import ServiceManagement
 
 @MainActor
 enum LoginItem {
-    static var agent: SMAppService { SMAppService.agent(plistName: "com.alejandro.tapacerrada.agent.plist") }
+    static var agent: SMAppService { SMAppService.agent(plistName: "com.alejandro.coffy.agent.plist") }
 
     static var isEnabled: Bool { agent.status == .enabled }
     static var needsApproval: Bool { agent.status == .requiresApproval }
 
-    static func ensureRegistered() {
+    /// Se registra sola la primera vez. Antes se marcaba como hecho aunque fallara
+    /// (p. ej. abierta fuera de Aplicaciones) y ya no se reintentaba nunca.
+    static func ensureRegistered(canRegister: Bool) {
         let d = UserDefaults.standard
-        if d.bool(forKey: "loginConfigured") { return }
-        d.set(true, forKey: "loginConfigured")
-        setEnabled(true)
+        if d.bool(forKey: "loginConfigured") || !canRegister { return }
+        if isEnabled || needsApproval || setEnabled(true) { d.set(true, forKey: "loginConfigured") }
     }
 
-    static func setEnabled(_ on: Bool) {
+    @discardableResult
+    static func setEnabled(_ on: Bool) -> Bool {
         do {
             if on { try agent.register() } else { try agent.unregister() }
             Log.write("Inicio de sesión: \(on ? "activado" : "desactivado")")
+            return true
         } catch {
             Log.write("Inicio de sesión (\(on)): \(error)")
+            return false
         }
     }
 }
@@ -48,20 +52,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .filter { $0.processIdentifier != me.processIdentifier }
         if !others.isEmpty { exit(0) }
 
+        // La versión anterior (Tapa Cerrada) también toca pmset: si sigue abierta, la cerramos
+        // (al salir restaura el reposo normal) para que no se peleen.
+        for old in NSRunningApplication.runningApplications(withBundleIdentifier: Legacy.bundleID) {
+            Log.write("Cerrando la versión anterior (Tapa Cerrada, pid \(old.processIdentifier))")
+            old.terminate()
+        }
+
         // Si se abre desde Descargas (o un .zip), macOS la ejecuta en una copia temporal
         // ("App Translocation") y no puede registrarse para el inicio de sesión.
         let path = Bundle.main.bundlePath
-        if path.contains("/AppTranslocation/") || !(path.hasPrefix("/Applications/") || path.contains("/Applications/")) {
+        let inApplications = !path.contains("/AppTranslocation/") && path.contains("/Applications/")
+        if !inApplications {
             NSApp.activate()
             let a = NSAlert()
-            a.messageText = "Mueve Tapa Cerrada a Aplicaciones"
-            a.informativeText = "Arrastra «Tapa Cerrada» a la carpeta Aplicaciones y ábrela desde allí. Así podrá abrirse sola al iniciar sesión."
+            a.messageText = "Mueve Coffy a Aplicaciones"
+            a.informativeText = "Arrastra «Coffy» a la carpeta Aplicaciones y ábrela desde allí. Así podrá abrirse sola al iniciar sesión."
             a.addButton(withTitle: "Salir")
             a.addButton(withTitle: "Abrir de todas formas")
             if a.runModal() == .alertFirstButtonReturn { exit(0) }
         }
 
         Settings.register()
+        Notifier.requestPermission()
         // Evita App Nap: si no, los temporizadores en segundo plano se ralentizan.
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep],
                                                          reason: "Vigilar la tapa y las pantallas")
@@ -75,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                name: .estadoCambiado, object: nil)
         installSignalHandlers()
         Controller.shared.start()
-        LoginItem.ensureRegistered()
+        LoginItem.ensureRegistered(canRegister: inApplications)
 
         timer = Timer.scheduledTimer(timeInterval: 5, target: self, selector: #selector(tick),
                                      userInfo: nil, repeats: true)
@@ -112,11 +125,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !c.hasPermission { name = "exclamationmark.triangle" }
         else if c.sleepDisabled { name = "cup.and.saucer.fill" }
         else { name = "cup.and.saucer" }
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: "Tapa Cerrada")
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: "Coffy")
         img?.isTemplate = true
         statusItem.button?.image = img
         statusItem.button?.appearsDisabled = !Settings.enabled
-        statusItem.button?.toolTip = "Tapa Cerrada — \(c.reason)"
+        statusItem.button?.toolTip = "Coffy — \(c.reason)"
     }
 
     // MARK: - Menú
@@ -152,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        info("Tapa Cerrada \(version) — " + (c.sleepDisabled ? "reposo bloqueado" : "reposo normal"))
+        info("Coffy \(version) — " + (c.sleepDisabled ? "reposo bloqueado" : "reposo normal"))
         info(c.reason)
         var detail = c.externalDisplays > 0 ? "Pantallas externas: \(c.externalDisplays)" : "Sin pantalla externa"
         detail += c.power.onAC ? " · Cargador" : " · Batería"
@@ -167,14 +180,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         choices("Margen con la tapa cerrada sin pantalla", [0, 2, 5, 10, 15, 30],
                 current: Settings.graceMinutes, label: { $0 == 0 ? "Ninguno (reposo al cerrar)" : "\($0) min" },
                 #selector(setGrace(_:)))
-        choices("Reposo por inactividad (tapa abierta)", [-1, 5, 10, 15, 30, 60, 0],
+        choices("Reposo por inactividad", [-1, 5, 10, 15, 30, 60, 0],
                 current: Settings.idleSleepMinutes,
                 label: { $0 < 0 ? "Como en Ajustes del Sistema" : ($0 == 0 ? "Nunca" : "\($0) min") },
                 #selector(setIdle(_:)))
-        choices("Dormir si la batería baja de", [5, 10, 15, 20, 30],
+        choices("Dormir si la batería baja de (con pantalla: aviso)", [5, 10, 15, 20, 30],
                 current: Settings.minBattery, label: { "\($0) %" },
                 #selector(setMinBattery(_:)))
-        if PMSet.acWakeSupported {
+        if PMSet.acWakeSupported && c.hasPermission {
             item("Despertar al conectar el cargador", #selector(toggleACWake), on: PMSet.acWakeEnabled())
         }
 
@@ -189,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if projectURL != nil { item("Página del proyecto…", #selector(openProject)) }
         if c.hasPermission { item("Quitar permiso de administrador…", #selector(removePermission)) }
         menu.addItem(.separator())
-        item("Salir de Tapa Cerrada", #selector(quit), key: "q")
+        item("Salir de Coffy", #selector(quit), key: "q")
     }
 
     @objc private func toggleEnabled() { Settings.enabled.toggle(); Controller.shared.evaluate("ajuste") }
@@ -213,12 +226,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func askForPermission() {
         NSApp.activate()
         let a = NSAlert()
-        a.messageText = "Tapa Cerrada necesita un permiso"
+        a.messageText = "Coffy necesita un permiso"
         a.informativeText = """
         Para que el Mac no se duerma al cerrar la tapa hay que cambiar un ajuste del sistema \
         (pmset disablesleep). Eso requiere tu contraseña de administrador, solo esta vez.
 
-        Se crea /etc/sudoers.d/tapacerrada, que únicamente permite activar o desactivar ese ajuste. \
+        Se crea /etc/sudoers.d/coffy, que únicamente permite activar o desactivar ese ajuste. \
         Puedes quitarlo cuando quieras desde el menú.
         """
         a.addButton(withTitle: "Dar permiso…")

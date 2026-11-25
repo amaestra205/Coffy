@@ -27,6 +27,9 @@ final class Controller: NSObject {
     private var lastSleepNow = Date.distantPast
     private var lastVerify = Date.distantPast
     private var systemIdleMinutes: Int? = nil
+    private var lowBatteryNotified = false
+    /// Con una pantalla externa en uso solo dormimos al llegar a este nivel crítico.
+    static let criticalBattery = 5
     private var manualSleepAt: Date?
     private var manualSleep: Bool {
         guard let t = manualSleepAt else { return false }
@@ -148,10 +151,22 @@ final class Controller: NSObject {
         // Mac de sobremesa: no hay tapa que cerrar, no hacemos nada.
         if !power.hasBattery { return (false, "Este Mac no tiene tapa: no hace falta", false) }
 
-        if !power.onAC, let p = power.percent, p <= Settings.minBattery {
-            return (false, "Batería baja (\(p) %): reposo normal", lidClosed)
+        if !power.onAC, let p = power.percent {
+            // Con pantalla externa lo estás usando: no lo dormimos hasta un nivel crítico, solo avisamos.
+            let limit = externalDisplays > 0 ? min(Settings.minBattery, Controller.criticalBattery) : Settings.minBattery
+            if p <= limit {
+                return (false, "Batería muy baja (\(p) %): reposo normal", lidClosed)
+            }
+            if externalDisplays > 0 && p <= Settings.minBattery {
+                warnLowBattery(p)
+                if let idle = idleSleep() { return idle }
+                return (true, "Batería baja (\(p) %): conecta el cargador", false)
+            }
         }
+        if power.onAC || (power.percent ?? 100) > Settings.minBattery + 5 { lowBatteryNotified = false }
         if externalDisplays > 0 {
+            // Igual que el modo tapa cerrada de macOS: si no lo usas, se duerme por inactividad.
+            if let idle = idleSleep() { return idle }
             return (true, externalDisplays == 1 ? "Pantalla externa conectada" : "\(externalDisplays) pantallas externas", false)
         }
 
@@ -175,12 +190,25 @@ final class Controller: NSObject {
 
         // Mantenemos el bloqueo para que cerrar la tapa no duerma al instante, y hacemos
         // nosotros el reposo por inactividad (macOS no puede mientras está bloqueado).
-        if let limit = idleLimitMinutes, limit > 0,
-           SystemState.idleSeconds() >= Double(limit) * 60,
-           !SystemState.otherAppsPreventSleep() {
-            return (false, "Inactivo \(limit) min: a dormir", true)
-        }
+        if let idle = idleSleep() { return idle }
         return (true, "Listo: cierra la tapa y conecta la pantalla", false)
+    }
+
+    /// Mientras el reposo está bloqueado macOS no duerme por inactividad: lo hacemos nosotros.
+    /// nil = no toca dormir (se está usando, o hay vídeo/música/descargas).
+    private func idleSleep() -> (Bool, String, Bool)? {
+        guard let limit = idleLimitMinutes, limit > 0,
+              SystemState.idleSeconds() >= Double(limit) * 60,
+              !SystemState.otherAppsPreventSleep() else { return nil }
+        return (false, "Inactivo \(limit) min: a dormir", true)
+    }
+
+    private func warnLowBattery(_ p: Int) {
+        guard !lowBatteryNotified else { return }
+        lowBatteryNotified = true
+        Log.write("Aviso de batería baja (\(p) %) con pantalla externa")
+        Notifier.send("Batería baja (\(p) %)",
+                      "Conecta el cargador. Si baja al \(Controller.criticalBattery) %, el Mac se dormirá.")
     }
 
     private func notify() {

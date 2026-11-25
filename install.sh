@@ -1,5 +1,6 @@
 #!/bin/bash
-# Instala Tapa Cerrada compilándola desde el código (no necesita Gatekeeper ni descargas de binarios).
+# Instala Coffy compilándola desde el código (no necesita Gatekeeper ni descargas de binarios).
+# Si tenías la versión anterior («Tapa Cerrada»), la quita antes.
 # Uso:  ./install.sh            (desde una copia del repositorio)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -12,14 +13,15 @@ if ! xcrun --find swiftc >/dev/null 2>&1; then
 fi
 
 scripts/build-app.sh
+scripts/remove-legacy.sh
 DEST=/Applications
 [ -w "$DEST" ] || DEST="$HOME/Applications"
 mkdir -p "$DEST"
-pkill -x TapaCerrada 2>/dev/null || true
+pkill -x Coffy 2>/dev/null || true     # al cerrarse restaura el reposo normal
 sleep 1
-rm -rf "$DEST/Tapa Cerrada.app"
-cp -R "build/Tapa Cerrada.app" "$DEST/"
-open "$DEST/Tapa Cerrada.app"
+rm -rf "$DEST/Coffy.app"
+cp -R "build/Coffy.app" "$DEST/"
+open "$DEST/Coffy.app"
 echo
-echo "Listo: Tapa Cerrada está en $DEST y en la barra de menús (icono de taza)."
+echo "Listo: Coffy está en $DEST y en la barra de menús (icono de taza)."
 echo "La primera vez te pedirá la contraseña de administrador una sola vez."

@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>Label</key><string>com.alejandro.tapacerrada.agent</string>
-	<key>BundleProgram</key><string>Contents/MacOS/TapaCerrada</string>
+	<key>Label</key><string>com.alejandro.coffy.agent</string>
+	<key>BundleProgram</key><string>Contents/MacOS/Coffy</string>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key>
 	<dict>
@@ -12,6 +12,6 @@
 	<key>ProcessType</key><string>Interactive</string>
 	<key>LimitLoadToSessionType</key><string>Aqua</string>
 	<key>AssociatedBundleIdentifiers</key>
-	<array><string>com.alejandro.tapacerrada</string></array>
+	<array><string>com.alejandro.coffy</string></array>
 </dict>
 </plist>

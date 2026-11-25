@@ -2,9 +2,42 @@ import AppKit
 import IOKit
 import IOKit.ps
 import IOKit.pwr_mgt
+import UserNotifications
+
+// MARK: - Notificaciones
+
+enum Notifier {
+    /// Se pide al arrancar, para que el diálogo de macOS no salga justo cuando la batería está baja.
+    static func requestPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            if !granted { Log.write("Notificaciones no permitidas") }
+        }
+    }
+
+    static func send(_ title: String, _ body: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { s in
+            guard s.authorizationStatus == .authorized || s.authorizationStatus == .provisional else {
+                Log.write("Aviso no mostrado (sin permiso de notificaciones): \(title)")
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
+    }
+}
+
+/// Nombres de la versión anterior (Tapa Cerrada), para migrar sin dejar restos.
+enum Legacy {
+    static let bundleID = "com.alejandro.tapacerrada"
+    static let sudoersPath = "/etc/sudoers.d/tapacerrada"
+}
 
 extension Notification.Name {
-    static let estadoCambiado = Notification.Name("TapaCerradaEstadoCambiado")
+    static let estadoCambiado = Notification.Name("CoffyEstadoCambiado")
 }
 
 // MARK: - Ajustes
@@ -33,12 +66,18 @@ enum Log {
     static var url: URL {
         let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("TapaCerrada.log")
+        return dir.appendingPathComponent("Coffy.log")
     }
-    static func write(_ s: String) {
+    private static let formatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        let line = "[\(f.string(from: Date()))] \(s)\n"
+        return f
+    }()
+    private static let lock = NSLock()
+    static func write(_ s: String) {
+        // Se puede llamar desde otros hilos (p. ej. el callback de notificaciones).
+        lock.lock(); defer { lock.unlock() }
+        let line = "[\(formatter.string(from: Date()))] \(s)\n"
         let u = url
         if let attrs = try? FileManager.default.attributesOfItem(atPath: u.path),
            let size = attrs[.size] as? Int, size > 1_000_000 {
@@ -122,7 +161,7 @@ enum SystemState {
 // MARK: - pmset
 
 enum PMSet {
-    static let sudoersPath = "/etc/sudoers.d/tapacerrada"
+    static let sudoersPath = "/etc/sudoers.d/coffy"
 
     @discardableResult
     static func run(_ path: String, _ args: [String]) -> (Int32, String) {
@@ -160,14 +199,22 @@ enum PMSet {
         run("/usr/bin/pmset", ["-g", "cap"]).1.contains("acwake")
     }()
 
-    /// Minutos de reposo por inactividad configurados en Ajustes (fuente de energía actual). 0 = nunca.
+    /// Minutos de inactividad tras los que macOS dormiría el Mac (fuente de energía actual). 0 = nunca.
+    /// En los portátiles «sleep» suele valer 1: macOS no duerme hasta que se apaga la pantalla,
+    /// así que el tiempo real es el mayor de «sleep» y «displaysleep».
     static func systemIdleSleepMinutes() -> Int? {
-        setting("sleep").flatMap { Int($0) }
+        guard let sleep = setting("sleep").flatMap({ Int($0) }) else { return nil }
+        if sleep == 0 { return 0 }
+        guard let display = setting("displaysleep").flatMap({ Int($0) }) else { return sleep }
+        if display == 0 { return 0 }   // la pantalla no se apaga nunca: macOS tampoco duerme
+        return max(sleep, display)
     }
     static func acWakeEnabled() -> Bool { setting("acwake") == "1" }
     @discardableResult
     static func setACWake(_ on: Bool) -> Bool {
-        run("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "-a", "acwake", on ? "1" : "0"]).0 == 0
+        let (st, out) = run("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "-a", "acwake", on ? "1" : "0"])
+        if st != 0 { Log.write("pmset acwake \(on ? 1 : 0) falló (\(st)): \(out)") }
+        return st == 0
     }
 
     static func sleepNow() { run("/usr/bin/pmset", ["sleepnow"]) }
@@ -180,16 +227,17 @@ enum PMSet {
     /// Pide la contraseña una vez e instala una regla de sudo limitada a estos comandos exactos.
     static func installPermission() -> (Bool, String) {
         let rule = "#\(getuid()) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a acwake 0, /usr/bin/pmset -a acwake 1\n"
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("tapacerrada-\(UUID().uuidString).sudoers")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("coffy-\(UUID().uuidString).sudoers")
         do { try rule.write(to: tmp, atomically: true, encoding: .utf8) } catch { return (false, "\(error)") }
         let t = "'\(tmp.path)'"
-        let shell = "/usr/sbin/visudo -cf \(t) && /usr/bin/install -m 0440 -o root -g wheel \(t) \(sudoersPath)"
+        // De paso borra el permiso de la versión anterior (Tapa Cerrada), si quedaba.
+        let shell = "/usr/sbin/visudo -cf \(t) && /usr/bin/install -m 0440 -o root -g wheel \(t) \(sudoersPath) && /bin/rm -f \(Legacy.sudoersPath)"
         defer { try? FileManager.default.removeItem(at: tmp) }
-        return admin(shell, prompt: "Tapa Cerrada quiere poder impedir el reposo del Mac con la tapa cerrada.")
+        return admin(shell, prompt: "Coffy quiere poder impedir el reposo del Mac con la tapa cerrada.")
     }
 
     static func removePermission() -> (Bool, String) {
-        admin("/usr/bin/pmset -a disablesleep 0; /bin/rm -f \(sudoersPath)", prompt: "Tapa Cerrada va a quitar su permiso.")
+        admin("/usr/bin/pmset -a disablesleep 0; /bin/rm -f \(sudoersPath) \(Legacy.sudoersPath)", prompt: "Coffy va a quitar su permiso.")
     }
 
     private static func admin(_ shell: String, prompt: String) -> (Bool, String) {

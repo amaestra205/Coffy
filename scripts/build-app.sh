@@ -1,11 +1,11 @@
 #!/bin/bash
-# Compila "Tapa Cerrada.app" (universal: Apple Silicon + Intel) en build/.
+# Compila "Coffy.app" (universal: Apple Silicon + Intel) en build/.
 # Uso: scripts/build-app.sh [versión]      Requiere Xcode o las Command Line Tools.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION="${1:-}"
 OUT="build"
-APP="$OUT/Tapa Cerrada.app"
+APP="$OUT/Coffy.app"
 MIN_MACOS="14.0"
 
 rm -rf "$APP"
@@ -16,13 +16,13 @@ for ARCH in arm64 x86_64; do
   echo "== Compilando $ARCH"
   xcrun swiftc -swift-version 5 -parse-as-library -O \
     -target "$ARCH-apple-macos$MIN_MACOS" -sdk "$SDK" \
-    -module-name TapaCerrada Sources/*.swift -o "$OUT/obj/TapaCerrada-$ARCH"
+    -module-name Coffy Sources/*.swift -o "$OUT/obj/Coffy-$ARCH"
 done
-lipo -create "$OUT/obj/TapaCerrada-arm64" "$OUT/obj/TapaCerrada-x86_64" -output "$APP/Contents/MacOS/TapaCerrada"
+lipo -create "$OUT/obj/Coffy-arm64" "$OUT/obj/Coffy-x86_64" -output "$APP/Contents/MacOS/Coffy"
 
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-cp Resources/com.alejandro.tapacerrada.agent.plist "$APP/Contents/Library/LaunchAgents/"
+cp Resources/com.alejandro.coffy.agent.plist "$APP/Contents/Library/LaunchAgents/"
 
 if [ -n "$VERSION" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION#v}" "$APP/Contents/Info.plist"
