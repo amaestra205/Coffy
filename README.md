@@ -9,8 +9,6 @@
   Sin abrir el portátil, sin tocar nada.
 </p>
 
-<p align="center"><i>Antes se llamaba «Tapa Cerrada». English summary at the bottom.</i></p>
-
 ---
 
 ## Qué hace
